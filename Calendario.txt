@@ -1,0 +1,787 @@
+DEFINE
+    // ========================================
+    // CALENDARIO INTELIGENTE MULTI-PAÍS
+    // Incluye: Top 10 economías + LATAM
+    // v2.1 - Con festivos móviles + idioma ES/EN
+    // ========================================
+    
+    // ========================================
+    // FUNCIONES AUXILIARES PARA FESTIVOS MÓVILES
+    // ========================================
+    
+    // Calcular Domingo de Pascua (Algoritmo de Gauss)
+    FUNCTION EasterSunday = (pYear) =>
+        VAR a = MOD(pYear, 19)
+        VAR b = QUOTIENT(pYear, 100)
+        VAR c = MOD(pYear, 100)
+        VAR d = QUOTIENT(b, 4)
+        VAR e = MOD(b, 4)
+        VAR f = QUOTIENT(b + 8, 25)
+        VAR g = QUOTIENT(b - f + 1, 3)
+        VAR h = MOD(19 * a + b - d - g + 15, 30)
+        VAR i = QUOTIENT(c, 4)
+        VAR k = MOD(c, 4)
+        VAR l = MOD(32 + 2 * e + 2 * i - h - k, 7)
+        VAR m = QUOTIENT(a + 11 * h + 22 * l, 451)
+        VAR mes = QUOTIENT(h + l - 7 * m + 114, 31)
+        VAR dia = MOD(h + l - 7 * m + 114, 31) + 1
+        RETURN DATE(pYear, mes, dia)
+
+    // N-ésimo día de la semana del mes (ej: 3er lunes de enero)
+    FUNCTION NthWeekdayOfMonth = (pYear, pMonth, pWeekDay, pN) =>
+        VAR FirstOfMonth = DATE(pYear, pMonth, 1)
+        VAR FirstWeekday = WEEKDAY(FirstOfMonth)
+        VAR DaysToAdd = MOD(pWeekDay - FirstWeekday + 7, 7)
+        VAR FirstOccurrence = FirstOfMonth + DaysToAdd
+        RETURN FirstOccurrence + (pN - 1) * 7
+
+    // Último día de la semana del mes (ej: último lunes de mayo)
+    FUNCTION LastWeekdayOfMonth = (pYear, pMonth, pWeekDay) =>
+        VAR LastOfMonth = EOMONTH(DATE(pYear, pMonth, 1), 0)
+        VAR LastWeekday = WEEKDAY(LastOfMonth)
+        VAR DaysToSubtract = MOD(LastWeekday - pWeekDay + 7, 7)
+        RETURN LastOfMonth - DaysToSubtract
+
+    // Mover fecha al lunes siguiente (para Ley Emiliani Colombia)
+    FUNCTION MoveToNextMonday = (pDate) =>
+        VAR wd = WEEKDAY(pDate)
+        RETURN IF(wd = 2, pDate, pDate + MOD(9 - wd, 7))
+
+    // ========================================
+    // FUNCIÓN PRINCIPAL
+    // ========================================
+    FUNCTION SmartCalendarUDF = (
+        startDate,
+        endDate,
+        fiscalYearStartMonth,
+        countryCode,
+        includeHolidays,
+        languagechangechange              // NUEVO: "ES" o "EN"
+    ) =>
+    
+    VAR BaseCalendar = CALENDAR(startDate, endDate)
+    VAR lang = UPPER(languagechangechange)  // Normalizar a mayúsculas
+    
+    VAR EnrichedCalendar = 
+        ADDCOLUMNS(
+            BaseCalendar,
+            
+            // ========================================
+            // BÁSICO - Año/Mes/Día
+            // ========================================
+            "Year", YEAR([Date]),
+            "YearText", IF(lang = "ES", "AF " & YEAR([Date]), "FY " & YEAR([Date])),
+            "Quarter", QUARTER([Date]),
+            "QuarterText", IF(lang = "ES", "T" & QUARTER([Date]), "Q" & QUARTER([Date])),
+            "Month", MONTH([Date]),
+            "MonthName", FORMAT([Date], "MMMM"),
+            "MonthShort", FORMAT([Date], "MMM"),
+            "MonthYear", FORMAT([Date], "MMM YYYY"),
+            "Day", DAY([Date]),
+            "DayOfWeek", WEEKDAY([Date]),
+            "DayName", FORMAT([Date], "dddd"),
+            "DayNameShort", FORMAT([Date], "ddd"),
+            
+            // ========================================
+            // SEMANAS
+            // ========================================
+            "WeekOfYear", WEEKNUM([Date], 2),
+            "WeekOfMonth", 
+                VAR FirstDayOfMonth = DATE(YEAR([Date]), MONTH([Date]), 1)
+                VAR WeekOfFirstDay = WEEKNUM(FirstDayOfMonth, 2)
+                VAR WeekOfCurrentDay = WEEKNUM([Date], 2)
+                RETURN WeekOfCurrentDay - WeekOfFirstDay + 1,
+            "ISOWeek", 
+                VAR ThursdayOfWeek = [Date] - WEEKDAY([Date], 3) + 3
+                RETURN WEEKNUM(ThursdayOfWeek, 21),
+            
+            // ========================================
+            // FISCAL YEAR (Año Fiscal)
+            // ========================================
+            "FiscalYear", 
+                IF(MONTH([Date]) >= fiscalYearStartMonth,
+                    YEAR([Date]),
+                    YEAR([Date]) - 1
+                ),
+            "FiscalYearText",
+                VAR FY = IF(MONTH([Date]) >= fiscalYearStartMonth, YEAR([Date]), YEAR([Date]) - 1)
+                RETURN IF(lang = "ES", "AF" & FY, "FY" & FY),
+            "FiscalQuarter",
+                VAR MonthsFromFYStart = MOD(MONTH([Date]) - fiscalYearStartMonth + 12, 12)
+                RETURN QUOTIENT(MonthsFromFYStart, 3) + 1,
+            "FiscalQuarterText",
+                VAR FQ = VAR MonthsFromFYStart = MOD(MONTH([Date]) - fiscalYearStartMonth + 12, 12)
+                         RETURN QUOTIENT(MonthsFromFYStart, 3) + 1
+                RETURN IF(lang = "ES", "TF" & FQ, "FQ" & FQ),
+            "FiscalMonth",
+                MOD(MONTH([Date]) - fiscalYearStartMonth + 12, 12) + 1,
+            "FiscalPeriod",
+                VAR FY = IF(MONTH([Date]) >= fiscalYearStartMonth, YEAR([Date]), YEAR([Date]) - 1)
+                VAR FM = MOD(MONTH([Date]) - fiscalYearStartMonth + 12, 12) + 1
+                RETURN IF(lang = "ES", 
+                    "P" & FORMAT(FM, "00") & "-AF" & FY,
+                    "P" & FORMAT(FM, "00") & "-FY" & FY
+                ),
+            
+            // ========================================
+            // DÍAS ESPECIALES Y FLAGS
+            // ========================================
+            "IsWeekend", WEEKDAY([Date]) IN {1, 7},
+            "IsWeekday", NOT WEEKDAY([Date]) IN {1, 7},
+            
+            "IsMonthStart", DAY([Date]) = 1,
+            "IsMonthEnd", DAY([Date]) = DAY(EOMONTH([Date], 0)),
+            "IsQuarterStart", DAY([Date]) = 1 && MONTH([Date]) IN {1, 4, 7, 10},
+            "IsQuarterEnd", [Date] = EOMONTH([Date], 0) && MONTH([Date]) IN {3, 6, 9, 12},
+            "IsYearStart", MONTH([Date]) = 1 && DAY([Date]) = 1,
+            "IsYearEnd", MONTH([Date]) = 12 && DAY([Date]) = 31,
+            
+            // ========================================
+            // HOLIDAYS - 16 PAÍSES (CON MÓVILES)
+            // ========================================
+            "IsHoliday",
+                VAR CurrentYear = YEAR([Date])
+                VAR CurrentDate = [Date]
+                
+                // Pascua y fechas relacionadas
+                VAR Easter = EasterSunday(CurrentYear)
+                VAR GoodFriday = Easter - 2
+                VAR HolyThursday = Easter - 3
+                VAR EasterMonday = Easter + 1
+                VAR AscensionDay = Easter + 39
+                VAR WhitMonday = Easter + 50
+                VAR CorpusChristi = Easter + 60
+                
+                // USA - Festivos móviles
+                VAR MLKDay = NthWeekdayOfMonth(CurrentYear, 1, 2, 3)
+                VAR PresidentsDay = NthWeekdayOfMonth(CurrentYear, 2, 2, 3)
+                VAR MemorialDay = LastWeekdayOfMonth(CurrentYear, 5, 2)
+                VAR LaborDayUS = NthWeekdayOfMonth(CurrentYear, 9, 2, 1)
+                VAR ColumbusDay = NthWeekdayOfMonth(CurrentYear, 10, 2, 2)
+                VAR ThanksgivingUS = NthWeekdayOfMonth(CurrentYear, 11, 5, 4)
+                
+                // México - Se mueven al lunes
+                VAR ConstitutionMX = NthWeekdayOfMonth(CurrentYear, 2, 2, 1)
+                VAR BenitoJuarezMX = NthWeekdayOfMonth(CurrentYear, 3, 2, 3)
+                VAR RevolutionMX = NthWeekdayOfMonth(CurrentYear, 11, 2, 3)
+                
+                // Colombia - Ley Emiliani (se mueven al lunes)
+                VAR ReyesMagosCO = MoveToNextMonday(DATE(CurrentYear, 1, 6))
+                VAR SanJoseCO = MoveToNextMonday(DATE(CurrentYear, 3, 19))
+                VAR AscensionCO = MoveToNextMonday(AscensionDay)
+                VAR CorpusChristiCO = MoveToNextMonday(CorpusChristi)
+                VAR SagradoCorazonCO = MoveToNextMonday(CorpusChristi + 8)
+                VAR SanPedroPabloCO = MoveToNextMonday(DATE(CurrentYear, 6, 29))
+                VAR AsuncionCO = MoveToNextMonday(DATE(CurrentYear, 8, 15))
+                VAR DiaRazaCO = MoveToNextMonday(DATE(CurrentYear, 10, 12))
+                VAR TodosSantosCO = MoveToNextMonday(DATE(CurrentYear, 11, 1))
+                VAR IndepCartagenaCO = MoveToNextMonday(DATE(CurrentYear, 11, 11))
+                
+                // UK - Bank Holidays
+                VAR EarlyMayUK = NthWeekdayOfMonth(CurrentYear, 5, 2, 1)
+                VAR SpringBankUK = LastWeekdayOfMonth(CurrentYear, 5, 2)
+                VAR SummerBankUK = LastWeekdayOfMonth(CurrentYear, 8, 2)
+                
+                // Canadá
+                VAR FamilyDayCA = NthWeekdayOfMonth(CurrentYear, 2, 2, 3)
+                VAR VictoriaDayCA = LastWeekdayOfMonth(CurrentYear, 5, 2) - 7
+                VAR LaborDayCA = NthWeekdayOfMonth(CurrentYear, 9, 2, 1)
+                VAR ThanksgivingCA = NthWeekdayOfMonth(CurrentYear, 10, 2, 2)
+                
+                // Brasil - Carnaval
+                VAR CarnivalTueBR = Easter - 47
+                VAR CarnivalMonBR = Easter - 48
+                
+                // Chile - Solsticio (aprox 20-21 junio)
+                VAR SolsticeCL = IF(MOD(CurrentYear, 4) = 0, DATE(CurrentYear, 6, 20), DATE(CurrentYear, 6, 21))
+                
+                RETURN
+                    IF(NOT includeHolidays, FALSE(),
+                        SWITCH(countryCode,
+                            // 🇺🇸 ESTADOS UNIDOS (11 federales)
+                            "US", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                MLKDay,
+                                PresidentsDay,
+                                MemorialDay,
+                                DATE(CurrentYear, 6, 19),
+                                DATE(CurrentYear, 7, 4),
+                                LaborDayUS,
+                                ColumbusDay,
+                                DATE(CurrentYear, 11, 11),
+                                ThanksgivingUS,
+                                DATE(CurrentYear, 12, 25)
+                            },
+                            
+                            // 🇨🇳 CHINA
+                            "CN", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                DATE(CurrentYear, 5, 1),
+                                DATE(CurrentYear, 10, 1),
+                                DATE(CurrentYear, 10, 2),
+                                DATE(CurrentYear, 10, 3)
+                            },
+                            
+                            // 🇯🇵 JAPÓN
+                            "JP", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                NthWeekdayOfMonth(CurrentYear, 1, 2, 2),
+                                DATE(CurrentYear, 2, 11),
+                                DATE(CurrentYear, 2, 23),
+                                DATE(CurrentYear, 4, 29),
+                                DATE(CurrentYear, 5, 3),
+                                DATE(CurrentYear, 5, 4),
+                                DATE(CurrentYear, 5, 5),
+                                NthWeekdayOfMonth(CurrentYear, 7, 2, 3),
+                                DATE(CurrentYear, 8, 11),
+                                NthWeekdayOfMonth(CurrentYear, 9, 2, 3),
+                                NthWeekdayOfMonth(CurrentYear, 10, 2, 2),
+                                DATE(CurrentYear, 11, 3),
+                                DATE(CurrentYear, 11, 23)
+                            },
+                            
+                            // 🇩🇪 ALEMANIA
+                            "DE", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                GoodFriday,
+                                EasterMonday,
+                                DATE(CurrentYear, 5, 1),
+                                AscensionDay,
+                                WhitMonday,
+                                DATE(CurrentYear, 10, 3),
+                                DATE(CurrentYear, 12, 25),
+                                DATE(CurrentYear, 12, 26)
+                            },
+                            
+                            // 🇬🇧 REINO UNIDO
+                            "UK", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                GoodFriday,
+                                EasterMonday,
+                                EarlyMayUK,
+                                SpringBankUK,
+                                SummerBankUK,
+                                DATE(CurrentYear, 12, 25),
+                                DATE(CurrentYear, 12, 26)
+                            },
+                            
+                            // 🇮🇳 INDIA
+                            "IN", CurrentDate IN {
+                                DATE(CurrentYear, 1, 26),
+                                DATE(CurrentYear, 8, 15),
+                                DATE(CurrentYear, 10, 2),
+                                DATE(CurrentYear, 12, 25)
+                            },
+                            
+                            // 🇫🇷 FRANCIA
+                            "FR", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                EasterMonday,
+                                DATE(CurrentYear, 5, 1),
+                                DATE(CurrentYear, 5, 8),
+                                AscensionDay,
+                                WhitMonday,
+                                DATE(CurrentYear, 7, 14),
+                                DATE(CurrentYear, 8, 15),
+                                DATE(CurrentYear, 11, 1),
+                                DATE(CurrentYear, 11, 11),
+                                DATE(CurrentYear, 12, 25)
+                            },
+                            
+                            // 🇮🇹 ITALIA
+                            "IT", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                DATE(CurrentYear, 1, 6),
+                                EasterMonday,
+                                DATE(CurrentYear, 4, 25),
+                                DATE(CurrentYear, 5, 1),
+                                DATE(CurrentYear, 6, 2),
+                                DATE(CurrentYear, 8, 15),
+                                DATE(CurrentYear, 11, 1),
+                                DATE(CurrentYear, 12, 8),
+                                DATE(CurrentYear, 12, 25),
+                                DATE(CurrentYear, 12, 26)
+                            },
+                            
+                            // 🇧🇷 BRASIL
+                            "BR", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                CarnivalMonBR,
+                                CarnivalTueBR,
+                                GoodFriday,
+                                DATE(CurrentYear, 4, 21),
+                                DATE(CurrentYear, 5, 1),
+                                CorpusChristi,
+                                DATE(CurrentYear, 9, 7),
+                                DATE(CurrentYear, 10, 12),
+                                DATE(CurrentYear, 11, 2),
+                                DATE(CurrentYear, 11, 15),
+                                DATE(CurrentYear, 11, 20),
+                                DATE(CurrentYear, 12, 25)
+                            },
+                            
+                            // 🇨🇦 CANADÁ
+                            "CA", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                FamilyDayCA,
+                                GoodFriday,
+                                VictoriaDayCA,
+                                DATE(CurrentYear, 7, 1),
+                                LaborDayCA,
+                                ThanksgivingCA,
+                                DATE(CurrentYear, 11, 11),
+                                DATE(CurrentYear, 12, 25),
+                                DATE(CurrentYear, 12, 26)
+                            },
+                            
+                            // 🇨🇴 COLOMBIA (18 festivos - Ley Emiliani)
+                            "CO", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                ReyesMagosCO,
+                                SanJoseCO,
+                                HolyThursday,
+                                GoodFriday,
+                                DATE(CurrentYear, 5, 1),
+                                AscensionCO,
+                                CorpusChristiCO,
+                                SagradoCorazonCO,
+                                SanPedroPabloCO,
+                                DATE(CurrentYear, 7, 20),
+                                DATE(CurrentYear, 8, 7),
+                                AsuncionCO,
+                                DiaRazaCO,
+                                TodosSantosCO,
+                                IndepCartagenaCO,
+                                DATE(CurrentYear, 12, 8),
+                                DATE(CurrentYear, 12, 25)
+                            },
+                            
+                            // 🇲🇽 MÉXICO (7 obligatorios LFT)
+                            "MX", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                ConstitutionMX,
+                                BenitoJuarezMX,
+                                DATE(CurrentYear, 5, 1),
+                                DATE(CurrentYear, 9, 16),
+                                RevolutionMX,
+                                DATE(CurrentYear, 12, 25)
+                            },
+                            
+                            // 🇵🇪 PERÚ (16 feriados - actualizado 2024)
+                            "PE", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                HolyThursday,
+                                GoodFriday,
+                                DATE(CurrentYear, 5, 1),
+                                DATE(CurrentYear, 6, 7),
+                                DATE(CurrentYear, 6, 29),
+                                DATE(CurrentYear, 7, 23),
+                                DATE(CurrentYear, 7, 28),
+                                DATE(CurrentYear, 7, 29),
+                                DATE(CurrentYear, 8, 6),
+                                DATE(CurrentYear, 8, 30),
+                                DATE(CurrentYear, 10, 8),
+                                DATE(CurrentYear, 11, 1),
+                                DATE(CurrentYear, 12, 8),
+                                DATE(CurrentYear, 12, 9),
+                                DATE(CurrentYear, 12, 25)
+                            },
+                            
+                            // 🇧🇴 BOLIVIA
+                            "BO", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                DATE(CurrentYear, 1, 22),
+                                CarnivalMonBR,
+                                CarnivalTueBR,
+                                GoodFriday,
+                                DATE(CurrentYear, 5, 1),
+                                CorpusChristi,
+                                DATE(CurrentYear, 6, 21),
+                                DATE(CurrentYear, 8, 6),
+                                DATE(CurrentYear, 11, 2),
+                                DATE(CurrentYear, 12, 25)
+                            },
+                            
+                            // 🇪🇨 ECUADOR
+                            "EC", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                CarnivalMonBR,
+                                CarnivalTueBR,
+                                GoodFriday,
+                                DATE(CurrentYear, 5, 1),
+                                DATE(CurrentYear, 5, 24),
+                                DATE(CurrentYear, 8, 10),
+                                DATE(CurrentYear, 10, 9),
+                                DATE(CurrentYear, 11, 2),
+                                DATE(CurrentYear, 11, 3),
+                                DATE(CurrentYear, 12, 25)
+                            },
+                            
+                            // 🇨🇱 CHILE
+                            "CL", CurrentDate IN {
+                                DATE(CurrentYear, 1, 1),
+                                GoodFriday,
+                                Easter - 1,
+                                DATE(CurrentYear, 5, 1),
+                                DATE(CurrentYear, 5, 21),
+                                SolsticeCL,
+                                DATE(CurrentYear, 6, 29),
+                                DATE(CurrentYear, 7, 16),
+                                DATE(CurrentYear, 8, 15),
+                                DATE(CurrentYear, 9, 18),
+                                DATE(CurrentYear, 9, 19),
+                                DATE(CurrentYear, 10, 12),
+                                DATE(CurrentYear, 10, 31),
+                                DATE(CurrentYear, 11, 1),
+                                DATE(CurrentYear, 12, 8),
+                                DATE(CurrentYear, 12, 25)
+                            },
+                            
+                            FALSE()
+                        )
+                    ),
+            
+            // ========================================
+            // HOLIDAY NAMES - CON IDIOMA
+            // ========================================
+            "HolidayName",
+                VAR CurrentYear = YEAR([Date])
+                VAR CurrentDate = [Date]
+                VAR Easter = EasterSunday(CurrentYear)
+                VAR GoodFriday = Easter - 2
+                VAR HolyThursday = Easter - 3
+                VAR EasterMonday = Easter + 1
+                RETURN
+                    IF(NOT includeHolidays, BLANK(),
+                        SWITCH(TRUE(),
+                            // COMÚN PARA TODOS
+                            CurrentDate = DATE(CurrentYear, 1, 1), IF(lang = "ES", "Año Nuevo", "New Year's Day"),
+                            CurrentDate = DATE(CurrentYear, 5, 1), IF(lang = "ES", "Día del Trabajo", "Labor Day"),
+                            CurrentDate = DATE(CurrentYear, 12, 25), IF(lang = "ES", "Navidad", "Christmas"),
+                            CurrentDate = GoodFriday, IF(lang = "ES", "Viernes Santo", "Good Friday"),
+                            CurrentDate = HolyThursday, IF(lang = "ES", "Jueves Santo", "Holy Thursday"),
+                            CurrentDate = EasterMonday, IF(lang = "ES", "Lunes de Pascua", "Easter Monday"),
+                            
+                            // ESTADOS UNIDOS
+                            CurrentDate = DATE(CurrentYear, 7, 4) && countryCode = "US", IF(lang = "ES", "Día de la Independencia (US)", "Independence Day (US)"),
+                            CurrentDate = DATE(CurrentYear, 6, 19) && countryCode = "US", "Juneteenth",
+                            CurrentDate = DATE(CurrentYear, 11, 11) && countryCode = "US", IF(lang = "ES", "Día de los Veteranos", "Veterans Day"),
+                            
+                            // ALEMANIA
+                            CurrentDate = DATE(CurrentYear, 10, 3) && countryCode = "DE", IF(lang = "ES", "Día de la Unidad Alemana", "German Unity Day"),
+                            CurrentDate = DATE(CurrentYear, 12, 26) && countryCode = "DE", IF(lang = "ES", "San Esteban", "St. Stephen's Day"),
+                            
+                            // REINO UNIDO
+                            CurrentDate = DATE(CurrentYear, 12, 26) && countryCode = "UK", "Boxing Day",
+                            
+                            // FRANCIA
+                            CurrentDate = DATE(CurrentYear, 7, 14) && countryCode = "FR", IF(lang = "ES", "Día Nacional de Francia", "Bastille Day"),
+                            
+                            // COLOMBIA
+                            CurrentDate = DATE(CurrentYear, 7, 20) && countryCode = "CO", IF(lang = "ES", "Día de la Independencia", "Independence Day (CO)"),
+                            CurrentDate = DATE(CurrentYear, 8, 7) && countryCode = "CO", IF(lang = "ES", "Batalla de Boyacá", "Battle of Boyacá"),
+                            
+                            // MÉXICO
+                            CurrentDate = DATE(CurrentYear, 9, 16) && countryCode = "MX", IF(lang = "ES", "Día de la Independencia", "Independence Day (MX)"),
+                            
+                            // PERÚ
+                            CurrentDate = DATE(CurrentYear, 7, 28) && countryCode = "PE", IF(lang = "ES", "Fiestas Patrias", "Independence Day (PE)"),
+                            CurrentDate = DATE(CurrentYear, 7, 29) && countryCode = "PE", IF(lang = "ES", "Fiestas Patrias", "Independence Day (PE)"),
+                            
+                            // CHILE
+                            CurrentDate = DATE(CurrentYear, 9, 18) && countryCode = "CL", IF(lang = "ES", "Fiestas Patrias", "Independence Day (CL)"),
+                            CurrentDate = DATE(CurrentYear, 9, 19) && countryCode = "CL", IF(lang = "ES", "Glorias del Ejército", "Army Day"),
+                            
+                            BLANK()
+                        )
+                    ),
+            
+            // ========================================
+            // DÍAS LABORABLES (WORKDAYS)
+            // ========================================
+            "IsWorkingDay", 
+                VAR IsWeekendDay = WEEKDAY([Date]) IN {1, 7}
+                VAR CurrentYear = YEAR([Date])
+                VAR CurrentDate = [Date]
+                
+                VAR Easter = EasterSunday(CurrentYear)
+                VAR GoodFriday = Easter - 2
+                VAR HolyThursday = Easter - 3
+                VAR EasterMonday = Easter + 1
+                VAR AscensionDay = Easter + 39
+                VAR WhitMonday = Easter + 50
+                VAR CorpusChristi = Easter + 60
+                
+                VAR MLKDay = NthWeekdayOfMonth(CurrentYear, 1, 2, 3)
+                VAR PresidentsDay = NthWeekdayOfMonth(CurrentYear, 2, 2, 3)
+                VAR MemorialDay = LastWeekdayOfMonth(CurrentYear, 5, 2)
+                VAR LaborDayUS = NthWeekdayOfMonth(CurrentYear, 9, 2, 1)
+                VAR ColumbusDay = NthWeekdayOfMonth(CurrentYear, 10, 2, 2)
+                VAR ThanksgivingUS = NthWeekdayOfMonth(CurrentYear, 11, 5, 4)
+                
+                VAR ConstitutionMX = NthWeekdayOfMonth(CurrentYear, 2, 2, 1)
+                VAR BenitoJuarezMX = NthWeekdayOfMonth(CurrentYear, 3, 2, 3)
+                VAR RevolutionMX = NthWeekdayOfMonth(CurrentYear, 11, 2, 3)
+                
+                VAR ReyesMagosCO = MoveToNextMonday(DATE(CurrentYear, 1, 6))
+                VAR SanJoseCO = MoveToNextMonday(DATE(CurrentYear, 3, 19))
+                VAR AscensionCO = MoveToNextMonday(AscensionDay)
+                VAR CorpusChristiCO = MoveToNextMonday(CorpusChristi)
+                VAR SagradoCorazonCO = MoveToNextMonday(CorpusChristi + 8)
+                VAR SanPedroPabloCO = MoveToNextMonday(DATE(CurrentYear, 6, 29))
+                VAR AsuncionCO = MoveToNextMonday(DATE(CurrentYear, 8, 15))
+                VAR DiaRazaCO = MoveToNextMonday(DATE(CurrentYear, 10, 12))
+                VAR TodosSantosCO = MoveToNextMonday(DATE(CurrentYear, 11, 1))
+                VAR IndepCartagenaCO = MoveToNextMonday(DATE(CurrentYear, 11, 11))
+                
+                VAR EarlyMayUK = NthWeekdayOfMonth(CurrentYear, 5, 2, 1)
+                VAR SpringBankUK = LastWeekdayOfMonth(CurrentYear, 5, 2)
+                VAR SummerBankUK = LastWeekdayOfMonth(CurrentYear, 8, 2)
+                
+                VAR FamilyDayCA = NthWeekdayOfMonth(CurrentYear, 2, 2, 3)
+                VAR VictoriaDayCA = LastWeekdayOfMonth(CurrentYear, 5, 2) - 7
+                VAR LaborDayCA = NthWeekdayOfMonth(CurrentYear, 9, 2, 1)
+                VAR ThanksgivingCA = NthWeekdayOfMonth(CurrentYear, 10, 2, 2)
+                
+                VAR CarnivalTueBR = Easter - 47
+                VAR CarnivalMonBR = Easter - 48
+                
+                VAR SolsticeCL = IF(MOD(CurrentYear, 4) = 0, DATE(CurrentYear, 6, 20), DATE(CurrentYear, 6, 21))
+                
+                VAR IsHolidayDay = 
+                    IF(NOT includeHolidays, FALSE(),
+                        SWITCH(countryCode,
+                            "US", CurrentDate IN {DATE(CurrentYear, 1, 1), MLKDay, PresidentsDay, MemorialDay, DATE(CurrentYear, 6, 19), DATE(CurrentYear, 7, 4), LaborDayUS, ColumbusDay, DATE(CurrentYear, 11, 11), ThanksgivingUS, DATE(CurrentYear, 12, 25)},
+                            "CN", CurrentDate IN {DATE(CurrentYear, 1, 1), DATE(CurrentYear, 5, 1), DATE(CurrentYear, 10, 1), DATE(CurrentYear, 10, 2), DATE(CurrentYear, 10, 3)},
+                            "JP", CurrentDate IN {DATE(CurrentYear, 1, 1), NthWeekdayOfMonth(CurrentYear, 1, 2, 2), DATE(CurrentYear, 2, 11), DATE(CurrentYear, 2, 23), DATE(CurrentYear, 4, 29), DATE(CurrentYear, 5, 3), DATE(CurrentYear, 5, 4), DATE(CurrentYear, 5, 5), NthWeekdayOfMonth(CurrentYear, 7, 2, 3), DATE(CurrentYear, 8, 11), NthWeekdayOfMonth(CurrentYear, 9, 2, 3), NthWeekdayOfMonth(CurrentYear, 10, 2, 2), DATE(CurrentYear, 11, 3), DATE(CurrentYear, 11, 23)},
+                            "DE", CurrentDate IN {DATE(CurrentYear, 1, 1), GoodFriday, EasterMonday, DATE(CurrentYear, 5, 1), AscensionDay, WhitMonday, DATE(CurrentYear, 10, 3), DATE(CurrentYear, 12, 25), DATE(CurrentYear, 12, 26)},
+                            "UK", CurrentDate IN {DATE(CurrentYear, 1, 1), GoodFriday, EasterMonday, EarlyMayUK, SpringBankUK, SummerBankUK, DATE(CurrentYear, 12, 25), DATE(CurrentYear, 12, 26)},
+                            "IN", CurrentDate IN {DATE(CurrentYear, 1, 26), DATE(CurrentYear, 8, 15), DATE(CurrentYear, 10, 2), DATE(CurrentYear, 12, 25)},
+                            "FR", CurrentDate IN {DATE(CurrentYear, 1, 1), EasterMonday, DATE(CurrentYear, 5, 1), DATE(CurrentYear, 5, 8), AscensionDay, WhitMonday, DATE(CurrentYear, 7, 14), DATE(CurrentYear, 8, 15), DATE(CurrentYear, 11, 1), DATE(CurrentYear, 11, 11), DATE(CurrentYear, 12, 25)},
+                            "IT", CurrentDate IN {DATE(CurrentYear, 1, 1), DATE(CurrentYear, 1, 6), EasterMonday, DATE(CurrentYear, 4, 25), DATE(CurrentYear, 5, 1), DATE(CurrentYear, 6, 2), DATE(CurrentYear, 8, 15), DATE(CurrentYear, 11, 1), DATE(CurrentYear, 12, 8), DATE(CurrentYear, 12, 25), DATE(CurrentYear, 12, 26)},
+                            "BR", CurrentDate IN {DATE(CurrentYear, 1, 1), CarnivalMonBR, CarnivalTueBR, GoodFriday, DATE(CurrentYear, 4, 21), DATE(CurrentYear, 5, 1), CorpusChristi, DATE(CurrentYear, 9, 7), DATE(CurrentYear, 10, 12), DATE(CurrentYear, 11, 2), DATE(CurrentYear, 11, 15), DATE(CurrentYear, 11, 20), DATE(CurrentYear, 12, 25)},
+                            "CA", CurrentDate IN {DATE(CurrentYear, 1, 1), FamilyDayCA, GoodFriday, VictoriaDayCA, DATE(CurrentYear, 7, 1), LaborDayCA, ThanksgivingCA, DATE(CurrentYear, 11, 11), DATE(CurrentYear, 12, 25), DATE(CurrentYear, 12, 26)},
+                            "CO", CurrentDate IN {DATE(CurrentYear, 1, 1), ReyesMagosCO, SanJoseCO, HolyThursday, GoodFriday, DATE(CurrentYear, 5, 1), AscensionCO, CorpusChristiCO, SagradoCorazonCO, SanPedroPabloCO, DATE(CurrentYear, 7, 20), DATE(CurrentYear, 8, 7), AsuncionCO, DiaRazaCO, TodosSantosCO, IndepCartagenaCO, DATE(CurrentYear, 12, 8), DATE(CurrentYear, 12, 25)},
+                            "MX", CurrentDate IN {DATE(CurrentYear, 1, 1), ConstitutionMX, BenitoJuarezMX, DATE(CurrentYear, 5, 1), DATE(CurrentYear, 9, 16), RevolutionMX, DATE(CurrentYear, 12, 25)},
+                            "PE", CurrentDate IN {DATE(CurrentYear, 1, 1), HolyThursday, GoodFriday, DATE(CurrentYear, 5, 1), DATE(CurrentYear, 6, 7), DATE(CurrentYear, 6, 29), DATE(CurrentYear, 7, 23), DATE(CurrentYear, 7, 28), DATE(CurrentYear, 7, 29), DATE(CurrentYear, 8, 6), DATE(CurrentYear, 8, 30), DATE(CurrentYear, 10, 8), DATE(CurrentYear, 11, 1), DATE(CurrentYear, 12, 8), DATE(CurrentYear, 12, 9), DATE(CurrentYear, 12, 25)},
+                            "BO", CurrentDate IN {DATE(CurrentYear, 1, 1), DATE(CurrentYear, 1, 22), CarnivalMonBR, CarnivalTueBR, GoodFriday, DATE(CurrentYear, 5, 1), CorpusChristi, DATE(CurrentYear, 6, 21), DATE(CurrentYear, 8, 6), DATE(CurrentYear, 11, 2), DATE(CurrentYear, 12, 25)},
+                            "EC", CurrentDate IN {DATE(CurrentYear, 1, 1), CarnivalMonBR, CarnivalTueBR, GoodFriday, DATE(CurrentYear, 5, 1), DATE(CurrentYear, 5, 24), DATE(CurrentYear, 8, 10), DATE(CurrentYear, 10, 9), DATE(CurrentYear, 11, 2), DATE(CurrentYear, 11, 3), DATE(CurrentYear, 12, 25)},
+                            "CL", CurrentDate IN {DATE(CurrentYear, 1, 1), GoodFriday, Easter - 1, DATE(CurrentYear, 5, 1), DATE(CurrentYear, 5, 21), SolsticeCL, DATE(CurrentYear, 6, 29), DATE(CurrentYear, 7, 16), DATE(CurrentYear, 8, 15), DATE(CurrentYear, 9, 18), DATE(CurrentYear, 9, 19), DATE(CurrentYear, 10, 12), DATE(CurrentYear, 10, 31), DATE(CurrentYear, 11, 1), DATE(CurrentYear, 12, 8), DATE(CurrentYear, 12, 25)},
+                            FALSE()
+                        )
+                    )
+                RETURN NOT IsWeekendDay && NOT IsHolidayDay,
+            
+            // ========================================
+            // WORKING DAYS IN MONTH
+            // ========================================
+            "WorkingDaysInMonth",
+                VAR CurrentMonth = MONTH([Date])
+                VAR CurrentYear = YEAR([Date])
+                VAR MonthStart = DATE(CurrentYear, CurrentMonth, 1)
+                VAR MonthEnd = EOMONTH(MonthStart, 0)
+                VAR TotalDays = DAY(MonthEnd)
+                VAR WeekendDays = 
+                    SUMX(
+                        GENERATESERIES(1, TotalDays, 1),
+                        VAR d = DATE(CurrentYear, CurrentMonth, [Value])
+                        RETURN IF(WEEKDAY(d) IN {1, 7}, 1, 0)
+                    )
+                RETURN TotalDays - WeekendDays,
+            
+            // ========================================
+            // RESTO DE COLUMNAS
+            // ========================================
+            "DayOfYear", DATEDIFF(DATE(YEAR([Date]), 1, 1), [Date], DAY) + 1,
+            "DaysInMonth", DAY(EOMONTH([Date], 0)),
+            "DaysInYear", IF(MOD(YEAR([Date]), 4) = 0 && (MOD(YEAR([Date]), 100) <> 0 || MOD(YEAR([Date]), 400) = 0), 366, 365),
+            "DaysRemainingInMonth", DAY(EOMONTH([Date], 0)) - DAY([Date]),
+            "DaysRemainingInQuarter",
+                VAR QuarterEndDate = EOMONTH(DATE(YEAR([Date]), QUARTER([Date]) * 3, 1), 0)
+                RETURN DATEDIFF([Date], QuarterEndDate, DAY),
+            "DaysRemainingInYear", DATEDIFF([Date], DATE(YEAR([Date]), 12, 31), DAY),
+            
+            "IsToday", [Date] = TODAY(),
+            "IsYesterday", [Date] = TODAY() - 1,
+            "IsTomorrow", [Date] = TODAY() + 1,
+            "IsPast", [Date] < TODAY(),
+            "IsFuture", [Date] > TODAY(),
+            "IsCurrent", [Date] = TODAY(),
+            
+            "IsCurrentWeek", [Date] >= TODAY() - WEEKDAY(TODAY(), 2) + 1 && [Date] <= TODAY() - WEEKDAY(TODAY(), 2) + 7,
+            "IsCurrentMonth", YEAR([Date]) = YEAR(TODAY()) && MONTH([Date]) = MONTH(TODAY()),
+            "IsCurrentQuarter", YEAR([Date]) = YEAR(TODAY()) && QUARTER([Date]) = QUARTER(TODAY()),
+            "IsCurrentYear", YEAR([Date]) = YEAR(TODAY()),
+            "IsPreviousMonth",
+                VAR PrevMonth = EOMONTH(TODAY(), -1)
+                RETURN YEAR([Date]) = YEAR(PrevMonth) && MONTH([Date]) = MONTH(PrevMonth),
+            "IsPreviousQuarter",
+                VAR PrevQuarter = EOMONTH(TODAY(), -3)
+                RETURN YEAR([Date]) = YEAR(PrevQuarter) && QUARTER([Date]) = QUARTER(PrevQuarter),
+            "IsPreviousYear", YEAR([Date]) = YEAR(TODAY()) - 1,
+            
+            // ========================================
+            // RELATIVE LABELS - CON IDIOMA
+            // ========================================
+            "RelativeDayLabel",
+                SWITCH(TRUE(),
+                    [Date] = TODAY(), IF(lang = "ES", "Hoy", "Today"),
+                    [Date] = TODAY() - 1, IF(lang = "ES", "Ayer", "Yesterday"),
+                    [Date] = TODAY() + 1, IF(lang = "ES", "Mañana", "Tomorrow"),
+                    [Date] >= TODAY() - 7 && [Date] < TODAY(), FORMAT([Date], "dddd"),
+                    [Date] > TODAY() && [Date] <= TODAY() + 7, 
+                        IF(lang = "ES", "Próximo " & FORMAT([Date], "dddd"), "Next " & FORMAT([Date], "dddd")),
+                    FORMAT([Date], "MMM DD, YYYY")
+                ),
+            
+            "RelativeMonthLabel",
+                VAR MonthsDiff = (YEAR([Date]) - YEAR(TODAY())) * 12 + (MONTH([Date]) - MONTH(TODAY()))
+                RETURN
+                    SWITCH(TRUE(),
+                        MonthsDiff = 0, IF(lang = "ES", "Este Mes", "This Month"),
+                        MonthsDiff = -1, IF(lang = "ES", "Mes Pasado", "Last Month"),
+                        MonthsDiff = 1, IF(lang = "ES", "Próximo Mes", "Next Month"),
+                        MonthsDiff < 0, IF(lang = "ES", 
+                            "Hace " & FORMAT(ABS(MonthsDiff), "0") & " Meses",
+                            FORMAT(ABS(MonthsDiff), "0") & " Months Ago"),
+                        MonthsDiff > 0, IF(lang = "ES",
+                            "En " & FORMAT(MonthsDiff, "0") & " Meses",
+                            "In " & FORMAT(MonthsDiff, "0") & " Months"),
+                        FORMAT([Date], "MMM YYYY")
+                    ),
+            
+            // ========================================
+            // SEASON - CON IDIOMA Y HEMISFERIO
+            // ========================================
+            "Season",
+                VAR IsSouthernHemisphere = countryCode IN {"CL", "AR", "UY", "PY", "AU", "NZ", "ZA"}
+                RETURN
+                    IF(IsSouthernHemisphere,
+                        SWITCH(MONTH([Date]),
+                            12, IF(lang = "ES", "Verano", "Summer"), 
+                            1, IF(lang = "ES", "Verano", "Summer"), 
+                            2, IF(lang = "ES", "Verano", "Summer"),
+                            3, IF(lang = "ES", "Otoño", "Fall"), 
+                            4, IF(lang = "ES", "Otoño", "Fall"), 
+                            5, IF(lang = "ES", "Otoño", "Fall"),
+                            6, IF(lang = "ES", "Invierno", "Winter"), 
+                            7, IF(lang = "ES", "Invierno", "Winter"), 
+                            8, IF(lang = "ES", "Invierno", "Winter"),
+                            9, IF(lang = "ES", "Primavera", "Spring"), 
+                            10, IF(lang = "ES", "Primavera", "Spring"), 
+                            11, IF(lang = "ES", "Primavera", "Spring"),
+                            IF(lang = "ES", "Desconocido", "Unknown")
+                        ),
+                        SWITCH(MONTH([Date]),
+                            12, IF(lang = "ES", "Invierno", "Winter"), 
+                            1, IF(lang = "ES", "Invierno", "Winter"), 
+                            2, IF(lang = "ES", "Invierno", "Winter"),
+                            3, IF(lang = "ES", "Primavera", "Spring"), 
+                            4, IF(lang = "ES", "Primavera", "Spring"), 
+                            5, IF(lang = "ES", "Primavera", "Spring"),
+                            6, IF(lang = "ES", "Verano", "Summer"), 
+                            7, IF(lang = "ES", "Verano", "Summer"), 
+                            8, IF(lang = "ES", "Verano", "Summer"),
+                            9, IF(lang = "ES", "Otoño", "Fall"), 
+                            10, IF(lang = "ES", "Otoño", "Fall"), 
+                            11, IF(lang = "ES", "Otoño", "Fall"),
+                            IF(lang = "ES", "Desconocido", "Unknown")
+                        )
+                    ),
+            
+            "MonthSort", YEAR([Date]) * 100 + MONTH([Date]),
+            "QuarterSort", YEAR([Date]) * 10 + QUARTER([Date]),
+            "WeekSort", YEAR([Date]) * 100 + WEEKNUM([Date], 2),
+            "FiscalMonthSort", 
+                VAR FY = IF(MONTH([Date]) >= fiscalYearStartMonth, YEAR([Date]), YEAR([Date]) - 1)
+                VAR FM = MOD(MONTH([Date]) - fiscalYearStartMonth + 12, 12) + 1
+                RETURN FY * 100 + FM,
+            
+            "DateKey", YEAR([Date]) * 10000 + MONTH([Date]) * 100 + DAY([Date]),
+            "Is_L7D", [Date] >= TODAY() - 7 && [Date] <= TODAY(),
+            "Is_L30D", [Date] >= TODAY() - 30 && [Date] <= TODAY(),
+            
+            // ========================================
+            // COLUMNAS NUEVAS - CON IDIOMA
+            // ========================================
+            "Fortnight", IF(DAY([Date]) <= 15, 1, 2),
+            "FortnightText", 
+                IF(DAY([Date]) <= 15, 
+                    IF(lang = "ES", "1ra Quincena", "1st Fortnight"),
+                    IF(lang = "ES", "2da Quincena", "2nd Fortnight")
+                ),
+            
+            "Semester", IF(MONTH([Date]) <= 6, 1, 2),
+            "SemesterText", IF(lang = "ES", "S", "H") & IF(MONTH([Date]) <= 6, "1", "2"),
+            
+            "YearMonth", YEAR([Date]) * 100 + MONTH([Date]),
+            "YearQuarter", YEAR([Date]) & "-" & IF(lang = "ES", "T", "Q") & QUARTER([Date]),
+            
+            "Is_L90D", [Date] >= TODAY() - 90 && [Date] <= TODAY(),
+            "Is_L365D", [Date] >= TODAY() - 365 && [Date] <= TODAY(),
+            
+            "Is_MTD", YEAR([Date]) = YEAR(TODAY()) && MONTH([Date]) = MONTH(TODAY()) && [Date] <= TODAY(),
+            "Is_QTD", YEAR([Date]) = YEAR(TODAY()) && QUARTER([Date]) = QUARTER(TODAY()) && [Date] <= TODAY(),
+            "Is_YTD", YEAR([Date]) = YEAR(TODAY()) && [Date] <= TODAY(),
+            
+            "Is_LYMTD", YEAR([Date]) = YEAR(TODAY()) - 1 && MONTH([Date]) = MONTH(TODAY()) && DAY([Date]) <= DAY(TODAY()),
+            "Is_LYQTD", YEAR([Date]) = YEAR(TODAY()) - 1 && QUARTER([Date]) = QUARTER(TODAY()),
+            "Is_LYTD", YEAR([Date]) = YEAR(TODAY()) - 1
+        )
+    
+    RETURN EnrichedCalendar
+
+    // ========================================
+    // FUNCIONES PRE-CONFIGURADAS POR PAÍS
+    // Ahora con parámetro de idioma
+    // ========================================
+    
+    // TOP 10 ECONOMÍAS - ESPAÑOL
+    FUNCTION Calendar_US_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "US", TRUE(), "ES")
+    FUNCTION Calendar_CN_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "CN", TRUE(), "ES")
+    FUNCTION Calendar_JP_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 4, "JP", TRUE(), "ES")
+    FUNCTION Calendar_DE_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "DE", TRUE(), "ES")
+    FUNCTION Calendar_UK_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 4, "UK", TRUE(), "ES")
+    FUNCTION Calendar_IN_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 4, "IN", TRUE(), "ES")
+    FUNCTION Calendar_FR_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "FR", TRUE(), "ES")
+    FUNCTION Calendar_IT_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "IT", TRUE(), "ES")
+    FUNCTION Calendar_BR_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "BR", TRUE(), "ES")
+    FUNCTION Calendar_CA_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 4, "CA", TRUE(), "ES")
+    
+    // TOP 10 ECONOMÍAS - INGLÉS
+    FUNCTION Calendar_US_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "US", TRUE(), "EN")
+    FUNCTION Calendar_CN_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "CN", TRUE(), "EN")
+    FUNCTION Calendar_JP_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 4, "JP", TRUE(), "EN")
+    FUNCTION Calendar_DE_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "DE", TRUE(), "EN")
+    FUNCTION Calendar_UK_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 4, "UK", TRUE(), "EN")
+    FUNCTION Calendar_IN_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 4, "IN", TRUE(), "EN")
+    FUNCTION Calendar_FR_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "FR", TRUE(), "EN")
+    FUNCTION Calendar_IT_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "IT", TRUE(), "EN")
+    FUNCTION Calendar_BR_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "BR", TRUE(), "EN")
+    FUNCTION Calendar_CA_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 4, "CA", TRUE(), "EN")
+    
+    // LATAM - ESPAÑOL
+    FUNCTION Calendar_CO_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "CO", TRUE(), "ES")
+    FUNCTION Calendar_MX_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "MX", TRUE(), "ES")
+    FUNCTION Calendar_PE_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "PE", TRUE(), "ES")
+    FUNCTION Calendar_BO_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "BO", TRUE(), "ES")
+    FUNCTION Calendar_EC_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "EC", TRUE(), "ES")
+    FUNCTION Calendar_CL_ES = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "CL", TRUE(), "ES")
+    
+    // LATAM - INGLÉS
+    FUNCTION Calendar_CO_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "CO", TRUE(), "EN")
+    FUNCTION Calendar_MX_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "MX", TRUE(), "EN")
+    FUNCTION Calendar_PE_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "PE", TRUE(), "EN")
+    FUNCTION Calendar_BO_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "BO", TRUE(), "EN")
+    FUNCTION Calendar_EC_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "EC", TRUE(), "EN")
+    FUNCTION Calendar_CL_EN = () => SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "CL", TRUE(), "EN")
+
+// ========================================
+// TEST
+// ========================================
+EVALUATE
+    Calendar_CO_ES()  // Colombia en Español
+
+// O usar directamente:
+// EVALUATE
+//     SmartCalendarUDF(DATE(2020,1,1), DATE(2030,12,31), 1, "CO", TRUE(), "ES")
